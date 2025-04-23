@@ -9,12 +9,19 @@ div.split-pane-container {
 
   display: flex;
   flex-direction: row;
+
+  overflow-x: hidden; /* Prevent horizontal layout jumps */
+  position: relative;
 }
 
 div.split-pane {
   display: flex;
   flex-direction: column;
   height: 100%;
+  flex: 1 1 auto; /* allows panes to grow/shrink properly */
+
+  min-width: 0; /* Prevents flex children from growing infinitely */
+  overflow-x: auto; /* If scroll needed within, allow internally */
 }
 
 div.split-pane-hidden {
@@ -55,3 +62,36 @@ div.handle-grab-box:hover {
 .handle:focus {
   opacity: 1;
 }
+
+.split-pane-content span,
+.split-pane-content div,
+.split-pane-content td {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  display: block;
+}
+
+
+.pane-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.query-bar {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.datagrid-container {
+  overflow-x: auto;
+}
+
+
+

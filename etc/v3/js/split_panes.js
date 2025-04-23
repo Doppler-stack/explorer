@@ -24,6 +24,7 @@ const resize_handle = Vue.component('resize-handle', {
       start: undefined,
       width: 0,
       x: 0,
+      hovered: false,
     }
   },
   mounted() {
@@ -36,10 +37,22 @@ const resize_handle = Vue.component('resize-handle', {
     begin_drag(e) {
       e.preventDefault();
       this.moving = true;
-      this.start = this.$el.offsetLeft;
-      this.begin_drag_callback(this);
+      this.x = evt.clientX;
 
-      document.addEventListener("mousemove", this.dragging);
+      // Smooth throttled drag
+      this.mousemove = (e) => {
+        const offset = e.clientX - this.x;
+
+        if (this.animationFrame) {
+          cancelAnimationFrame(this.animationFrame);
+        }
+
+        this.animationFrame = requestAnimationFrame(() => {
+          this.dragging_callback(this, offset);
+        });
+      };
+
+      document.addEventListener("mousemove", this.mousemove); // use of throttled mousemove
       document.addEventListener("mouseup", this.end_drag);
       this.$parent.$el.style.cursor = "col-resize";
     },
@@ -58,16 +71,30 @@ const resize_handle = Vue.component('resize-handle', {
       delta = getMouseMovement(e);
       this.direction = delta < 0 ? "left" : delta > 0 ? "right" : null;
 
-      this.dragging_callback(this, offset);
+      // Smooth it out with animation frame throttle
+      if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = requestAnimationFrame(() => {
+        this.dragging_callback(this, offset);
+      });
+
     },
     end_drag(e) {
       e.preventDefault();
       this.moving = false;
-      this.end_drag_callback(this);
 
-      document.removeEventListener("mousemove", this.dragging);
+      // Cancel any pending frame
+      if (this.animationFrame) {
+        cancelAnimationFrame(this.animationFrame);
+        this.animationFrame = null;
+      }
+
+      document.removeEventListener("mousemove", this.mousemove);
       document.removeEventListener("mouseup", this.end_drag);
       this.$parent.$el.style.cursor = "auto";
+
+      this.end_drag_callback(this);
+
+      this.$parent.syncRatios(); // Save new ratios after manual drag
     }
   },
   computed: {
@@ -87,7 +114,10 @@ const resize_handle = Vue.component('resize-handle', {
       <div class="handle-grab-box"
         @mousedown="begin_drag"
         @mousemove="dragging"
-        @mouseup="end_drag">
+        @mouseup="end_drag"
+        @mouseenter="hovered = true"
+        @mouseleave="hovered = false"
+        :class="{ 'handle-hovered': hovered }">
       </div>
     </div>
   `
@@ -104,11 +134,13 @@ const frame = Vue.component('split-pane', {
   },
   data() {
     return {
-      active: false,
-      visible: true,
-      width: undefined,
-      start: 0,
+      moving: false,
+      direction: null,
+      start: undefined,
+      width: 0,
       x: 0,
+      hovered: false,
+      animationFrame: null
     }
   },
   computed: {
@@ -116,7 +148,7 @@ const frame = Vue.component('split-pane', {
       return this.width - this.min_width;
     },
     locked() {
-      return ( this.slack == 0 ? true : false );
+      return (this.slack == 0 ? true : false);
     },
     index() {
       return this.$parent.frames.indexOf(this);
@@ -137,7 +169,7 @@ const frame = Vue.component('split-pane', {
     }
   },
   watch: {
-    width: function(new_width) {
+    width: function (new_width) {
       this.$el.style.width = new_width + "px";
       this.x = this.$el.offsetLeft;
 
@@ -145,7 +177,7 @@ const frame = Vue.component('split-pane', {
         this.$el.style.minWidth = this.min_width + "px";
       }
 
-      for (var i = 0; i < this.$children.length; i ++) {
+      for (var i = 0; i < this.$children.length; i++) {
         const child = this.$children[i];
         child.$forceUpdate(); // Give child a chance to respond to width change
       }
@@ -172,7 +204,30 @@ const frame = Vue.component('split-pane', {
       this.visible = false;
     },
     expand() {
+      if (this.visible) return; // Already visible? Don't re-expand
       this.visible = true;
+
+      this.$el.style.display = 'block';
+      this.$el.style.width = `${this.width}px`; // fallback width just in case
+      this.$el.offsetWidth; // force reflow again
+
+      console.log("Expanding frame", this._uid, "→ visible:", this.visible);
+      console.log("Parent saved_ratios BEFORE resize:", this.$parent.saved_ratios);
+
+      // Only add a new ratio for this frame if it’s missing
+      const uid = this._uid;
+      if (!this.$parent.saved_ratios[uid]) {
+        const total_fluid_width = this.$parent.frames
+          .filter(f => !f.fixed && f.visible && f._uid !== uid)
+          .reduce((acc, f) => acc + f.width, 0);
+
+        // Assign a default ratio for the newly expanded frame
+        this.$parent.saved_ratios[uid] = this.min_width / (total_fluid_width + this.min_width);
+      }
+
+      this.$parent.resize(); // force layout to reapply saved_ratios
+      this.$parent.syncRatios(); // stores them again
+
     }
   },
   template: `
@@ -185,11 +240,17 @@ const frame = Vue.component('split-pane', {
 const frame_container = Vue.component('split-pane-container', {
   data() {
     return {
-    }
+      saved_ratios: {},
+    };
   },
+
+  created() {
+    this.saved_ratios = {};
+  },
+
   computed: {
     children() {
-      return this.$children
+      return this.$children;
     },
     frames() {
       return this.$children.filter(child => child.$options.name === "split-pane");
@@ -204,9 +265,9 @@ const frame_container = Vue.component('split-pane-container', {
         handle_space: this.handles.reduce((acc, handle) => acc + handle.width, 0),
         fixed_fr_space: this.frames.filter(frame => frame.fixed).reduce((acc, frame) => acc + frame.width, 0),
         fluid_fr_space: this.frames.filter(frame => !frame.fixed).reduce((acc, frame) => acc + frame.width, 0),
-      }
+      };
       return layout;
-    }
+    },
   },
   mounted() {
 
@@ -243,21 +304,21 @@ const frame_container = Vue.component('split-pane-container', {
       this.$children.push(handle_instance);
       this.handles.push(handle_instance);
       handle_instance.$parent = this;
-      
+
       handle_instance.$mount();
       frame.$el.after(handle_instance.$el);
     }
   },
-  
+
   methods: {
     has_active_children(frame) {
       let result = 0;
 
-      for (let i = 0; i < frame.$children.length; i ++) {
+      for (let i = 0; i < frame.$children.length; i++) {
         const child = frame.$children[i];
         const css = child.$el.classList;
         if (!css.contains("disable")) {
-          result ++;
+          result++;
         }
       }
 
@@ -267,6 +328,7 @@ const frame_container = Vue.component('split-pane-container', {
     resize() {
       let collapsed_width = 0;
 
+      // Collapse inactive frames
       for (const frame of this.frames) {
         let active = true;
         if (frame.collapsible) {
@@ -288,20 +350,95 @@ const frame_container = Vue.component('split-pane-container', {
       let free_sp = application_width - (this.layout.fixed_fr_space + this.layout.handle_space) + collapsed_width;
       let demanded_sp = this.layout.fluid_fr_space;
 
+
+      // Apply saved ratios
       for (const frame of this.frames) {
         let active = true;
         if (frame.collapsible) {
           active = this.has_active_children(frame);
         }
 
-        if (!frame.fixed) {
-          let r = frame.width / demanded_sp;
-          let resized_width = r * free_sp;
-          frame.width = resized_width >= frame.min_width ? resized_width : frame.min_width;
+        if (!active) {
+          frame.collapse();
+          continue;
         }
-        
+
+        frame.expand();
+
+        if (!frame.fixed && frame.visible) {
+          const ratio = this.saved_ratios[frame._uid] || (frame.width / demanded_sp);
+          const new_width = ratio * free_sp;
+
+          // Debug Log
+          console.log(`Applying ratio for frame ${frame._uid} →`, {
+            ratio,
+            free_sp,
+            new_width,
+            min_width: frame.min_width
+          });
+          console.log(`[Resize] Frame ${frame._uid}: ratio=${ratio}, free_sp=${free_sp}, new_width=${new_width}`);
+
+          frame.width = new_width >= frame.min_width ? new_width : frame.min_width;
+          frame.$el.style.width = `${frame.width}px`;
+          frame.$el.style.display = 'block'; // Optional force unhide
+          frame.$el.offsetWidth; // Force reflow
+
+          console.warn(`Frame ${frame._uid} is visible but has no rendered width`);
+
+
+          console.log("Frame applied →", {
+            uid: frame._uid,
+            visible: frame.visible,
+            width: frame.width,
+            element_width: frame.$el.offsetWidth,
+            el: frame.$el
+          });
+
+        }
+
         frame.save();
       }
+
+      console.log("Frames + widths:");
+      this.frames.forEach(f => {
+        console.log(f._uid, f.width, f.visible);
+      });
+
+    },
+
+    syncRatios() {
+      console.log("syncRatios called");
+      this.saved_ratios = {}; // Clear old ratios
+
+      // DEBUG: Log the actual frame widths
+      console.log('Saving ratios:', this.frames.map(f => ({
+        uid: f._uid,
+        width: f.width,
+        visible: f.visible,
+        fixed: f.fixed
+      })));
+
+      const total_fluid_width = this.frames
+        .filter(f => !f.fixed && f.visible)
+        .reduce((acc, f) => acc + f.width, 0);
+
+      const free_sp = this.$el.offsetWidth - this.layout.fixed_fr_space - this.layout.handle_space;
+      const demanded_sp = this.layout.fluid_fr_space;
+
+      // Build the saved_ratios map (UID → fraction of total)
+      for (const frame of this.frames) {
+        if (!frame.fixed && frame.visible) {
+          // Save each pane’s share of the total
+          this.saved_ratios[frame._uid] = frame.width / total_fluid_width;
+
+        }
+        frame.save();
+      }
+
+      console.log("Saved Ratios:", this.saved_ratios);
+      console.log("Demanded SP:", demanded_sp);
+      console.log("Free SP:", free_sp);
+
     },
 
     begin_adjust(handle) {
@@ -309,18 +446,40 @@ const frame_container = Vue.component('split-pane-container', {
     },
 
     adjust(handle, offset) {
-      lfr = handle.left_frame;
-      rfr = handle.right_frame;
+      const lfr = handle.left_frame;
+      const rfr = handle.right_frame;
+
+      // Ensure starting width values are up-to-date before applying offset
+      lfr.start = lfr.width;
+      rfr.start = rfr.width;
 
       let current_step = {
         left: lfr.width,
         right: rfr.width
       }
 
+      // Limit offset speed to max 85% of total container width
+      const container_width = this.$el.offsetWidth;
+      const MAX_RATIO = 0.85;
+      const offset_limit = container_width * MAX_RATIO;
+
+      // Dampen offset speed to reduce harsh movement
+      const DAMPING_FACTOR = 0.35;
+      offset = offset * DAMPING_FACTOR;
+
+      // Clamp offset if it exceeds max allowed delta
+      if (Math.abs(offset) > offset_limit) {
+        offset = offset < 0 ? -offset_limit : offset_limit;
+      }
+
       let next_step = {
         left: lfr.start + offset,
         right: rfr.start - offset
-      }
+      };
+
+      // Prevent dragging beyond ratio
+      if (next_step.left > container_width * MAX_RATIO) return;
+      if (next_step.right > container_width * MAX_RATIO) return;
 
       let valid_step = next_step.left >= lfr.min_width && next_step.left < lfr.max_width && next_step.right >= rfr.min_width && next_step.right < rfr.max_width;
 
@@ -357,6 +516,8 @@ const frame_container = Vue.component('split-pane-container', {
       for (const frame of this.frames) {
         frame.save();
       }
+
+      this.syncRatios(); // Save final proportions AFTER adjustments are done
     },
 
   },
